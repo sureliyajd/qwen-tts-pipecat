@@ -22,19 +22,36 @@ nvcc --version 2>/dev/null | tail -1 || true
 if command -v uv >/dev/null 2>&1; then PIP="uv pip"; else PIP="pip install"; fi
 echo "== using: $PIP =="
 
+# ---- system libs (sox binary backs qwen-tts's `sox` python dep) ----
+if command -v apt-get >/dev/null 2>&1; then
+  echo "== apt: sox + libsndfile =="
+  (apt-get update -qq && apt-get install -y -qq sox libsox-dev libsndfile1) \
+    || echo "(apt failed — install sox manually if torchaudio/sox errors appear)"
+fi
+
 # ---- PyTorch nightly for CUDA 12.8 (Blackwell sm_120) ----
-echo "== PyTorch (cu128 nightly) =="
-$PIP install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu128
+# torch AND torchaudio MUST come from the same nightly cu128 index, BEFORE qwen-tts.
+# qwen-tts depends on unpinned torchaudio; if pip resolves it later it pulls a STABLE
+# torchaudio that drags in a stable torch and clobbers the nightly cu128 build (no sm_120).
+echo "== PyTorch + torchaudio (cu128 nightly) =="
+$PIP install --pre torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
 
 # ---- pinned stack (see docs/PROGRESS.md: newer transformers breaks qwen_tts) ----
+# These cover qwen-tts's own deps too (transformers==4.57.3, accelerate==1.12.0, gradio,
+# librosa, soundfile, sox, onnxruntime, einops) so the --no-deps install below is safe.
 echo "== pinned deps =="
-$PIP install "transformers==4.57.3" "huggingface_hub<1.0" \
-             ninja accelerate safetensors soundfile librosa \
+$PIP install "transformers==4.57.3" "huggingface_hub<1.0" "accelerate==1.12.0" \
+             ninja safetensors soundfile librosa sox onnxruntime einops gradio \
              fastapi "uvicorn[standard]" numpy websockets
 
 # ---- Qwen3-TTS inference package (Qwen3TTSModel, tokenizer, generate_* helpers) ----
-echo "== qwen-tts =="
-$PIP install "git+https://github.com/QwenLM/Qwen3-TTS.git"
+# --no-deps: deps already installed above; this prevents qwen-tts from pulling a stable
+# torch/torchaudio or bumping transformers/huggingface_hub off their pins.
+echo "== qwen-tts (--no-deps) =="
+$PIP install --no-deps "git+https://github.com/QwenLM/Qwen3-TTS.git"
+
+# re-assert the hub pin in case anything above nudged it (cheap; PROGRESS: needs <1.0)
+$PIP install "huggingface_hub<1.0"
 
 # optional: faster prefill (HF parts run eager without it)
 $PIP install flash-attn --no-build-isolation || echo "(flash-attn skipped; eager attn is fine)"
@@ -50,6 +67,10 @@ fi
 echo "== megakernel submodule =="
 git submodule update --init --recursive
 [ -f kernel/requirements.txt ] && $PIP install -r kernel/requirements.txt || true
+
+# ---- preflight: fail loud NOW if the env is wrong (before download/compile) ----
+echo "== preflight =="
+python3 scripts/preflight.py || { echo "preflight FAILED — fix the env before continuing"; exit 1; }
 
 # ---- compile the megakernel now (JIT, ~minutes; cached after) ----
 echo "== compiling megakernel (sm_120a) =="

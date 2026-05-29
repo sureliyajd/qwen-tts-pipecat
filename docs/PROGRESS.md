@@ -96,8 +96,15 @@ is written but optional.
   Solid (only fastapi/websockets deps). py_compile OK.
 - `scripts/say.py` — Option-A client: WS in, streams PCM, writes `out.wav`, `--play`
   optional, prints **TTFC + RTF**. Deps: `websockets` only. py_compile OK.
-- `scripts/setup.sh` — DONE (cu128 nightly, pinned stack, qwen-tts, kernel JIT build;
-  `INSTALL_PIPECAT=1` opt-in for Option B). `docs/phase5-runbook.md` §3 = server + demo cmds.
+- `scripts/setup.sh` — DONE. Install ORDER matters: nightly cu128 torch+torchaudio FIRST,
+  then pinned deps (covering qwen-tts's deps), then `--no-deps` qwen-tts — else qwen-tts's
+  unpinned torchaudio clobbers nightly torch and loses sm_120. apt sox/libsndfile. Runs
+  `preflight.py` before the kernel compile. `INSTALL_PIPECAT=1` opt-in for Option B.
+- `scripts/preflight.py` — fails in seconds if the env is wrong (cu128 torch, sm_120 GPU,
+  torchaudio matches torch, transformers==4.57.3, hub<1.0, qwen_tts + qwen_megakernel import)
+  BEFORE the download/compile burn GPU hours. `--fast` skips the slow kernel import.
+- `docs/DEMO.md` — client-showcase script (cold run, A/B, restart, save-artifacts-first).
+- GPU image MUST ship CUDA 12.8 toolkit (nvcc), not driver-only, or the kernel won't compile.
 - Ref clip: voice-clone model needs ref_audio + transcript. **Default = Qwen's hosted demo
   clip** (clone_2.wav + its transcript, already in `colab_validate.py`); no user clip needed
   unless a specific voice is wanted.

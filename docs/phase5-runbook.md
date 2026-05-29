@@ -12,6 +12,10 @@ Order is deliberate: **verify the kernel before building the server on top of it
   ```
 - The kernel JIT-compiles on first import (`qwen_megakernel`) — needs nvcc + CUDA 12.8,
   `-arch=sm_120a`. First import is slow (compile); cached after.
+- `setup.sh` installs torch+torchaudio from the cu128 nightly FIRST, then qwen-tts
+  `--no-deps` (it pins unpinned torchaudio that would otherwise clobber the nightly torch),
+  then runs `scripts/preflight.py` — fails in seconds if the env is wrong, before the
+  download/compile. Re-run `python3 scripts/preflight.py` any time to re-validate.
 - Download weights: `bash scripts/download_model.sh` (hf login; gated).
 
 ## 1. Verify kernel trunk == HF trunk (DO THIS FIRST)
