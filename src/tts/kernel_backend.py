@@ -67,7 +67,10 @@ class KernelTalkerTrunk:
             outs.append(self.dec._norm_out.clone())   # final-normed hidden [1024] fp32
 
         hidden = torch.stack(outs, dim=0).unsqueeze(0).to(ie.dtype)  # [1,T,1024]
+        # generate() post-processing reads outputs.hidden_states[-1], so populate a
+        # 1-tuple (the talker model normally returns the per-layer hidden tuple).
         return BaseModelOutputWithPast(last_hidden_state=hidden,
+                                       hidden_states=(hidden,),
                                        past_key_values=past_key_values)
 
 

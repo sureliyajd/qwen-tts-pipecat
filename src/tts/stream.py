@@ -173,6 +173,10 @@ def stream_tts_pcm(model, *, generate_method="generate_voice_clone",
             gen(**gen_args)
         except Exception as e:  # surface to main thread
             err["e"] = e
+        finally:
+            # signal end-of-frames so the consume loop below terminates (generate
+            # produced its last frame). Without this the loop blocks forever.
+            streamer.q.put(_SENTINEL)
 
     with streamer:
         worker = threading.Thread(target=_run, daemon=True)

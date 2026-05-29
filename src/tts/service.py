@@ -67,7 +67,8 @@ class QwenMegakernelTTSService(TTSService):
     def can_generate_metrics(self) -> bool:
         return True
 
-    async def run_tts(self, text: str) -> AsyncGenerator[Frame, None]:
+    async def run_tts(self, text: str, context_id: str | None = None) -> AsyncGenerator[Frame, None]:
+        import time
         import websockets  # lazy: only needed when the pipeline actually runs
 
         req: dict = {"text": text, "language": self._language}
@@ -78,12 +79,18 @@ class QwenMegakernelTTSService(TTSService):
 
         await self.start_ttfb_metrics()
         yield TTSStartedFrame()
+        t0 = time.perf_counter()
+        ttfc_ms = None
+        nbytes = 0
         try:
             async with websockets.connect(self._ws_url, max_size=None) as ws:
                 await ws.send(json.dumps(req))
                 async for msg in ws:
                     if isinstance(msg, (bytes, bytearray)):
+                        if ttfc_ms is None:
+                            ttfc_ms = (time.perf_counter() - t0) * 1000.0
                         await self.stop_ttfb_metrics()
+                        nbytes += len(msg)
                         yield TTSAudioRawFrame(
                             audio=bytes(msg),
                             sample_rate=self.sample_rate,
@@ -97,4 +104,15 @@ class QwenMegakernelTTSService(TTSService):
         except Exception as e:
             yield ErrorFrame(f"TTS connection failed: {e}")
         finally:
+            wall = time.perf_counter() - t0
+            secs = nbytes / 2 / self.sample_rate  # int16 mono
+            rtf = (wall / secs) if secs else float("inf")
+            toks = secs * 12.5  # talker frames @ 12.5 Hz (1 group-0 token/frame)
+            print(
+                f"⏱  TTS metrics | TTFC {ttfc_ms:.0f} ms | "
+                f"audio {secs:.2f}s | wall {wall:.2f}s | RTF {rtf:.2f} | "
+                f"~{toks/wall:.0f} talker tok/s"
+                if ttfc_ms is not None else "⏱  TTS metrics | no audio produced",
+                flush=True,
+            )
             yield TTSStoppedFrame()

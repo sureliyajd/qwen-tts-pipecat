@@ -36,7 +36,6 @@ if _REPO_ROOT not in sys.path:
 def _import_pipecat():
     """Import pipecat pieces, returning a namespace dict. Raises with guidance if absent."""
     try:
-        from pipecat.audio.vad.silero import SileroVADAnalyzer
         from pipecat.pipeline.pipeline import Pipeline
         from pipecat.pipeline.runner import PipelineRunner
         from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -48,6 +47,13 @@ def _import_pipecat():
         )
 
         from src.tts.service import QwenMegakernelTTSService
+
+        # VAD is optional: silero can drag in torch (no wheel on py3.14). If absent we
+        # run without a transport-level VAD and lean on Deepgram's endpointing.
+        try:
+            from pipecat.audio.vad.silero import SileroVADAnalyzer
+        except Exception:
+            SileroVADAnalyzer = None
 
         return dict(
             Pipeline=Pipeline,
@@ -64,28 +70,92 @@ def _import_pipecat():
     except ImportError as e:
         raise SystemExit(
             f"pipecat import failed ({e}).\n"
-            "Install: pip install \"pipecat-ai[deepgram,openai,local,silero]\"\n"
+            "Install: pip install \"pipecat-ai[deepgram,openai,local]\"\n"
             "Import paths vary by pipecat version — adjust _import_pipecat() to match yours."
         )
 
 
+def _build_demo_tap():
+    """A tidy on-screen transcript tap: prints '🎤 You:' / '🤖 Bot:' as turns happen.
+
+    Two instances are placed in the pipeline (after STT for user text, after the LLM for
+    assistant text). Forwards every frame unchanged.
+    """
+    from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
+    from pipecat.frames.frames import (
+        TranscriptionFrame,
+        LLMTextFrame,
+        LLMFullResponseEndFrame,
+    )
+
+    class DemoTap(FrameProcessor):
+        def __init__(self, role):
+            super().__init__()
+            self._role = role
+            self._buf = ""
+
+        async def process_frame(self, frame, direction: "FrameDirection"):
+            await super().process_frame(frame, direction)
+            if self._role == "user" and isinstance(frame, TranscriptionFrame):
+                if frame.text and frame.text.strip():
+                    print(f"\n🎤 You:  {frame.text.strip()}", flush=True)
+            elif self._role == "bot":
+                if isinstance(frame, LLMTextFrame):
+                    self._buf += frame.text
+                elif isinstance(frame, LLMFullResponseEndFrame) and self._buf.strip():
+                    print(f"🤖 Bot:  {self._buf.strip()}", flush=True)
+                    self._buf = ""
+            await self.push_frame(frame, direction)
+
+    return DemoTap("user"), DemoTap("bot")
+
+
 async def main():
+    # Quiet Pipecat's DEBUG/INFO spam so the demo terminal shows a clean transcript.
+    import sys as _sys
+    try:
+        from loguru import logger as _lg
+        _lg.remove()
+        _lg.add(_sys.stderr, level="WARNING")
+    except Exception:
+        pass
+
     P = _import_pipecat()
 
+    # Longer stop_secs so a normal pause mid-sentence doesn't end the turn (fixes the
+    # "fragmented into many short turns" behavior). Tune via VAD_STOP_SECS.
+    vad = None
+    if P["SileroVADAnalyzer"]:
+        try:
+            from pipecat.audio.vad.vad_analyzer import VADParams
+            stop_secs = float(os.environ.get("VAD_STOP_SECS", "1.2"))
+            vad = P["SileroVADAnalyzer"](params=VADParams(stop_secs=stop_secs))
+        except Exception:
+            vad = P["SileroVADAnalyzer"]()
+    else:
+        print("[pipeline] no silero VAD installed — relying on Deepgram endpointing.")
     transport = P["LocalAudioTransport"](
         P["LocalAudioTransportParams"](
             audio_in_enabled=True,
             audio_out_enabled=True,
-            vad_analyzer=P["SileroVADAnalyzer"](),
+            vad_analyzer=vad,
         )
     )
 
     stt = P["DeepgramSTTService"](api_key=os.environ["DEEPGRAM_API_KEY"])
 
-    llm = P["OpenAILLMService"](
-        api_key=os.environ["OPENAI_API_KEY"],
-        model=os.environ.get("LLM_MODEL", "gpt-4o-mini"),
-    )
+    # LLM: Groq (free, OpenAI-compatible endpoint) if GROQ_API_KEY set, else OpenAI.
+    if os.environ.get("GROQ_API_KEY"):
+        llm = P["OpenAILLMService"](
+            api_key=os.environ["GROQ_API_KEY"],
+            base_url="https://api.groq.com/openai/v1",
+            model=os.environ.get("LLM_MODEL", "llama-3.1-8b-instant"),
+        )
+    else:
+        llm = P["OpenAILLMService"](
+            api_key=os.environ["OPENAI_API_KEY"],
+            model=os.environ.get("LLM_MODEL", "gpt-4o-mini"),
+        )
 
     tts = P["QwenMegakernelTTSService"](
         ws_url=os.environ.get("TTS_WS_URL", "ws://127.0.0.1:8000/tts"),
@@ -98,23 +168,29 @@ async def main():
     messages = [
         {
             "role": "system",
-            "content": "You are a helpful voice assistant. Keep replies short and spoken-friendly.",
+            "content": "You are a voice assistant. Reply in ONE sentence, "
+                       "max 8 words. Be direct. No preamble, no emojis.",
         }
     ]
-    context = llm.create_context_aggregator  # alias check below
+    # pipecat 1.3.x: universal LLMContext + LLMContextAggregatorPair.
+    from pipecat.processors.aggregators.llm_context import LLMContext
+    from pipecat.processors.aggregators.llm_response_universal import (
+        LLMContextAggregatorPair,
+    )
 
-    # Newer pipecat: OpenAILLMContext + llm.create_context_aggregator(context)
-    from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
+    ctx = LLMContext(messages)
+    aggregator = LLMContextAggregatorPair(ctx)
 
-    ctx = OpenAILLMContext(messages)
-    aggregator = context(ctx)
+    user_tap, bot_tap = _build_demo_tap()
 
     pipeline = P["Pipeline"](
         [
             transport.input(),       # mic
             stt,                     # speech -> text
+            user_tap,                # print "You: ..."
             aggregator.user(),       # add user turn to context
             llm,                     # text -> reply text
+            bot_tap,                 # print "Bot: ..."
             tts,                     # reply text -> megakernel audio
             transport.output(),      # speaker
             aggregator.assistant(),  # add assistant turn to context
@@ -126,7 +202,11 @@ async def main():
         params=P["PipelineParams"](allow_interruptions=True),
     )
 
-    print("[pipeline] talk into the mic; Ctrl-C to stop.")
+    print("\n" + "=" * 56)
+    print("  Qwen3-TTS megakernel voice agent — LIVE")
+    print("  mic -> Deepgram STT -> Groq LLM -> megakernel TTS -> speaker")
+    print("  Talk now. Ctrl-C to stop.")
+    print("=" * 56, flush=True)
     await P["PipelineRunner"]().run(task)
 
 

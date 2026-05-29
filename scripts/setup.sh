@@ -19,7 +19,7 @@ fi
 nvcc --version 2>/dev/null | tail -1 || true
 
 # ---- python package manager (prefer uv) ----
-if command -v uv >/dev/null 2>&1; then PIP="uv pip"; else PIP="pip install"; fi
+if command -v uv >/dev/null 2>&1; then PIP="uv pip"; else PIP="pip"; fi
 echo "== using: $PIP =="
 
 # ---- system libs (sox binary backs qwen-tts's `sox` python dep) ----

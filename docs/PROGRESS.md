@@ -2,9 +2,24 @@
 
 Single source of truth for project status. Updated 2026-05-30.
 
-Phases 1-4 done and validated on free hardware (CPU + Colab T4). Phase-5/6 code (kernel
-backend, FastAPI server, CLI demo client, Pipecat service, full pipeline) written; runs
-only on the RTX 5090. Deliverable = Option A CLI demo (`scripts/say.py`).
+ALL PHASES COMPLETE. Validated end-to-end on RTX 5090 (Vast.ai). Demo recorded.
+Submission email + README written. Branch pushed, PR #1 updated.
+
+GPU run summary (2026-05-30):
+- CUDA 12.8 toolkit installed alongside box default nvcc 13 (cu128 torch needs CUDA 12 nvcc)
+- Kernel JIT-compiled on sm_120a: PASS
+- Talker weights loaded + kernel trunk running: PASS
+- End-to-end voice loop (mic→Deepgram→Groq→megakernel TTS→speaker): PASS, demo recorded
+- Loom demo: https://www.loom.com/share/825175f04efd4a379eee975b0824fb57
+- Perf: TTFC ~3.5–5.8s, RTF ~1.4–2.1 (bottleneck: code predictor PyTorch + dummy LM head)
+- Streaming frame-by-frame: PASS (project constraint met)
+
+Bugs found+fixed on GPU (now in repo):
+- setup.sh: PIP="pip install" → PIP="pip" (both branches)
+- kernel_backend.py: return hidden_states=(hidden,) — generate() postproc reads hidden_states[-1]
+- stream.py: deadlock fix — _run() must put _SENTINEL in finally block after generate() returns
+- service.py: run_tts(text, context_id) — pipecat 1.3.0 passes context_id as 2nd positional arg
+- pipeline/main.py: pipecat 1.3.0 context API (LLMContext+LLMContextAggregatorPair not OpenAILLMContext)
 
 ---
 
