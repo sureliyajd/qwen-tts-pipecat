@@ -28,3 +28,10 @@ build/
 logs/
 *.log
 results/
+reference/
+
+# Generated artifacts (golden vectors, audio, captures)
+golden/
+out/
+*.npz
+*.wav
