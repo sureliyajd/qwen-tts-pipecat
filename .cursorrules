@@ -1,0 +1,10 @@
+You are helping build a real-time voice pipeline.
+Always read CLAUDE.md first for full project context.
+
+Key rules:
+- Target hardware is RTX 5090, CUDA sm_120 (Blackwell only)
+- Python async/await for all streaming code
+- Audio must stream frame-by-frame, never buffer full utterance
+- Megakernel is in ./kernel/ — understand it before modifying
+- FastAPI for inference server, Pipecat for voice pipeline
+- bfloat16 only, no quantization
