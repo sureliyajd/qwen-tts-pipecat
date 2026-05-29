@@ -50,9 +50,35 @@ pcm = b"".join(stream_tts_pcm(
 Greedy (`do_sample=False`) so it should closely track the reference audio.
 
 ## 3. FastAPI / WebSocket server (after 1-2 pass)
-`src/server/main.py`: own the GPU + model + kernel backend; endpoint runs
-`astream_tts_pcm` and pushes binary PCM frames over a WebSocket. (Not yet written —
-build once the kernel trunk is verified.)
+`src/server/main.py` owns the GPU + model + kernel backend and streams binary PCM frames
+(24 kHz mono int16) over `astream_tts_pcm`. Voice-clone model -> set the reference once:
+```bash
+export TTS_MODEL_DIR=models/Qwen3-TTS-12Hz-0.6B-Base
+export TTS_REF_AUDIO=ref.wav TTS_REF_TEXT="transcript of ref.wav"
+export TTS_USE_KERNEL=1            # 0 -> stock HF talker, for an A/B speed compare
+python src/server/main.py         # or: uvicorn src.server.main:app --host 0.0.0.0 --port 8000
+```
+Endpoints: `WS /tts` (JSON in, PCM frames out, then `{"event":"done"}`), `POST /synthesize`
+(chunked raw PCM), `GET /tts.wav?text=...` (streamed WAV — quick `curl -o` test),
+`GET /health`.
+
+### Option A demo (no mic / STT / LLM keys) — `scripts/say.py`
+Deterministic text -> speech, prints TTFC + RTF. This is the interview deliverable:
+```bash
+pip install websockets                       # client dep (in setup.sh)
+python scripts/say.py "Hello from the megakernel." -o out.wav
+python scripts/say.py "Hello from the megakernel." --play   # live (needs sounddevice)
+```
+
+### Full voice loop (Option B, optional) — `src/pipeline/main.py`
+mic -> STT -> LLM -> megakernel TTS -> speaker, via `src/tts/service.py`
+(`QwenMegakernelTTSService`, a Pipecat `TTSService` that consumes `WS /tts`). Needs
+provider keys + pipecat extras:
+```bash
+INSTALL_PIPECAT=1 bash scripts/setup.sh      # or: pip install "pipecat-ai[deepgram,openai,local,silero]"
+export DEEPGRAM_API_KEY=... OPENAI_API_KEY=... TTS_WS_URL=ws://127.0.0.1:8000/tts
+python src/pipeline/main.py
+```
 
 ## 4. Benchmark (Phase 8)
 TTFC, RTF, tok/s, e2e. Tune `chunk_frames` (latency) and `left_context` (quality vs

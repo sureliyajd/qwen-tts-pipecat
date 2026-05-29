@@ -2,8 +2,9 @@
 
 Single source of truth for project status. Updated 2026-05-30.
 
-Phases 1-4 done and validated on free hardware (CPU + Colab T4). Phase-5 code written;
-runs only on the RTX 5090. Nothing committed yet (see Git status).
+Phases 1-4 done and validated on free hardware (CPU + Colab T4). Phase-5/6 code (kernel
+backend, FastAPI server, CLI demo client, Pipecat service, full pipeline) written; runs
+only on the RTX 5090. Deliverable = Option A CLI demo (`scripts/say.py`).
 
 ---
 
@@ -76,34 +77,53 @@ Bypasses upstream's full-utterance buffering. Docs: `docs/streaming.md`.
   equal -> PASS.** (bf16 gives ~6.8e-3 = rounding from different reduction order, not a
   bug — hence `--fp32_check` default on.)
 
-### Phase 5 — Kernel swap + server  🔜 CODE WRITTEN, NEEDS RTX 5090
+### Scope decision — Option A is the deliverable
+Interview submission = **CLI text→speech demo** (no mic/STT/LLM). `scripts/say.py` is the
+deliverable: deterministic, no API keys, proves the megakernel. Option B (full voice loop)
+is written but optional.
+
+### Phase 5 — Kernel swap + server  🔜 CODE COMPLETE, NEEDS RTX 5090 to RUN
 - `src/tts/kernel_backend.py` — `KernelTalkerTrunk`: drives the megakernel `Decoder`,
   injects `inputs_embeds` via `dec._embed_weight=vec` + `step(0)`, reads `dec._norm_out`
   as hidden, dummy [151936,1024] LM-head buffer to avoid OOB, resets on T>1 prefill, bs=1.
   `install(model, weights)` swaps the trunk. No kernel-source edits.
 - `scripts/verify_kernel_trunk.py` — FIRST GPU step: replay `golden_trunk.npz` through the
   kernel, compare hidden. **Use bf16-realistic tolerance (~1e-2 / mean<0.05), not 1e-3.**
-- `docs/phase5-runbook.md` — Vast.ai setup + order (verify -> e2e audio -> server).
-- Pending: `scripts/setup.sh` (still a stub), `src/server/main.py` (FastAPI/WS, build
-  after kernel verified).
+- `src/server/main.py` — full FastAPI server. Loads model, optional kernel trunk
+  (`TTS_USE_KERNEL=0` -> stock HF for free A/B speed compare), streams 24 kHz int16 PCM
+  frame-by-frame. Endpoints: `WS /tts`, `POST /synthesize`, `GET /tts.wav?text=`,
+  `GET /health`. Batch-1 serialized (asyncio lock). Config via env (`TTS_*`).
+  Solid (only fastapi/websockets deps). py_compile OK.
+- `scripts/say.py` — Option-A client: WS in, streams PCM, writes `out.wav`, `--play`
+  optional, prints **TTFC + RTF**. Deps: `websockets` only. py_compile OK.
+- `scripts/setup.sh` — DONE (cu128 nightly, pinned stack, qwen-tts, kernel JIT build;
+  `INSTALL_PIPECAT=1` opt-in for Option B). `docs/phase5-runbook.md` §3 = server + demo cmds.
+- Ref clip: voice-clone model needs ref_audio + transcript. **Default = Qwen's hosted demo
+  clip** (clone_2.wav + its transcript, already in `colab_validate.py`); no user clip needed
+  unless a specific voice is wanted.
 
-### Phases 6-8 — Pipecat service / full pipeline / benchmarks  ⬜ NOT STARTED
-`astream_tts_pcm` is the hook for the Pipecat `TTSService` (Phase 6). Benchmark targets:
-TTFC<60ms (Qwen's own first-packet = 97ms, so this is a stretch), RTF<0.15, ~1000 tok/s.
+### Phase 6 — Pipecat TTS service  🔜 WRITTEN, UNVERIFIED (pipecat API churn)
+- `src/tts/service.py` — `QwenMegakernelTTSService(TTSService)`: consumes `WS /tts`,
+  re-emits `TTSAudioRawFrame` framed by Started/Stopped. Version-tolerant imports.
+- `src/pipeline/main.py` — Option B: mic→STT(Deepgram)→LLM(OpenAI)→TTS→speaker, import-
+  guarded. Both py_compile OK but NOT run against an installed pipecat — may need a one-spot
+  import fix on the box (pipecat API drifts). Needs `INSTALL_PIPECAT=1` + provider keys.
+
+### Phases 7-8 — full pipeline / benchmarks  ⬜ NOT STARTED
+Benchmark targets: TTFC<60ms (Qwen's own first-packet = 97ms, stretch), RTF<0.15,
+~1000 tok/s. `say.py` already prints TTFC/RTF for the Option-A path.
 
 ---
 
-## Git status (nothing committed)
-Changed/created, not committed:
-- src/tts/{weights,trunk,stream,kernel_backend}.py
-- scripts/{verify_rope,capture_golden,colab_validate,verify_kernel_trunk}.py,
-  download_model.sh
-- docs/{rope-analysis,talker-decode,streaming,colab,phase5-runbook,PROGRESS}.md
-- CLAUDE.md (status), .gitignore (reference/)
-Local only (gitignored / not in repo): `reference/` (vendored Qwen source),
-`models/` (2.51 GB weights), `golden_trunk.npz` (in ~/Downloads).
+## Git
+Branch `phase1-4-talker-adaptation`, PR #1 open. Phases 1-4 + Phase-5 scaffolding
+committed (5161efa). Server/client/service/pipeline + setup.sh added in a follow-up commit.
+Local only (gitignored): `reference/` (vendored Qwen source), `models/` (2.51 GB weights),
+`golden_trunk.npz` (in ~/Downloads).
 
-## Immediate next actions
-1. (optional) Fill `scripts/setup.sh` so the GPU box is one-command provision.
-2. Commit the working tree (user's call).
-3. Rent RTX 5090 -> `verify_kernel_trunk.py` against `golden_trunk.npz` (PASS gate).
+## Immediate next actions (all on the rented RTX 5090)
+1. `bash scripts/setup.sh` ; `bash scripts/download_model.sh` ; copy `golden_trunk.npz` + a
+   ref clip to the box (or use the default demo clip).
+2. `verify_kernel_trunk.py` against `golden_trunk.npz` — the PASS gate (bf16 tol ~1e-2).
+3. Start `src/server/main.py`, run `scripts/say.py "..."` -> `out.wav` + TTFC/RTF. Demo done.
+4. (optional) A/B: `TTS_USE_KERNEL=0` vs `1` to show the kernel speedup.

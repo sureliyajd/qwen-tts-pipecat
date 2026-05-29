@@ -30,7 +30,7 @@ $PIP install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu
 echo "== pinned deps =="
 $PIP install "transformers==4.57.3" "huggingface_hub<1.0" \
              ninja accelerate safetensors soundfile librosa \
-             fastapi "uvicorn[standard]" numpy
+             fastapi "uvicorn[standard]" numpy websockets
 
 # ---- Qwen3-TTS inference package (Qwen3TTSModel, tokenizer, generate_* helpers) ----
 echo "== qwen-tts =="
@@ -38,6 +38,13 @@ $PIP install "git+https://github.com/QwenLM/Qwen3-TTS.git"
 
 # optional: faster prefill (HF parts run eager without it)
 $PIP install flash-attn --no-build-isolation || echo "(flash-attn skipped; eager attn is fine)"
+
+# optional: full voice pipeline (src/pipeline/main.py). Not needed for the server or the
+# scripts/say.py demo. Skipped by default; set INSTALL_PIPECAT=1 to include.
+if [ "${INSTALL_PIPECAT:-0}" = "1" ]; then
+  echo "== pipecat (full pipeline) =="
+  $PIP install "pipecat-ai[deepgram,openai,local,silero]" || echo "(pipecat install failed)"
+fi
 
 # ---- megakernel submodule + its requirements ----
 echo "== megakernel submodule =="
